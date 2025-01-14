@@ -9,6 +9,9 @@
 #include <esp_log.h>
 #include <driver/gpio.h>
 #include <esp_err.h>
+#include <freertos/FreeRTOS.h>
+
+static portMUX_TYPE onewire_mux = portMUX_INITIALIZER_UNLOCKED;
 
 typedef struct OW_Device *OWD_t;
 
