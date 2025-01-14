@@ -2,9 +2,6 @@
 // Created by miguel on 09/01/25.
 //
 
-#ifndef FUNCTION_GENERATOR_LCD_H
-#define FUNCTION_GENERATOR_LCD_H
-
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -29,4 +26,3 @@ void update_value(I2CD_t lcd, char *string, float valor, uint8_t pos_x, uint8_t 
 
 void lcd_init(I2CD_t ldc);
 
-#endif //FUNCTION_GENERATOR_LCD_H

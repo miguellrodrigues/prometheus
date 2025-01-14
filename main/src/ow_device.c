@@ -5,6 +5,11 @@
 #include <ow_device.h>
 
 #define TAG "OW_DEVICE"
+
+struct OW_Device {
+        uint8_t pin;
+};
+
 static portMUX_TYPE ow_mux = portMUX_INITIALIZER_UNLOCKED;
 
 // Timing constants in microseconds
@@ -21,6 +26,8 @@ static portMUX_TYPE ow_mux = portMUX_INITIALIZER_UNLOCKED;
 #define OW_RECOVERY       5     // Recovery time between operations
 
 static void ow_write_bit(uint8_t pin, uint8_t bit) {
+//    gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+
     if (bit) {
         // Write 1: 6µs low, 64µs high
         gpio_set_level(pin, 0);
@@ -40,6 +47,8 @@ static void ow_write_bit(uint8_t pin, uint8_t bit) {
 static uint8_t ow_read_bit(uint8_t pin) {
     uint8_t bit;
 
+//    gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+
     // Drive bus low for 6µs
     gpio_set_level(pin, 0);
     esp_rom_delay_us(OW_READ_LOW);
@@ -47,6 +56,8 @@ static uint8_t ow_read_bit(uint8_t pin) {
     // Release bus and wait before sampling
     gpio_set_level(pin, 1);
     esp_rom_delay_us(OW_READ_WAIT);
+
+//    gpio_set_direction(pin, GPIO_MODE_INPUT);
 
     // Sample the bit
     bit = gpio_get_level(pin);
@@ -62,6 +73,8 @@ esp_err_t ow_bus_reset(uint8_t pin) {
     uint8_t presence = 1;
     uint16_t wait_time = 0;
 
+//    gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+
     // Send reset pulse
     gpio_set_level(pin, 0);
     esp_rom_delay_us(OW_RESET_TIME);
@@ -69,6 +82,8 @@ esp_err_t ow_bus_reset(uint8_t pin) {
 
     // Wait before checking for presence
     esp_rom_delay_us(OW_PRESENCE_WAIT);
+
+//    gpio_set_direction(pin, GPIO_MODE_INPUT);
 
     // Wait for presence pulse or timeout
     while (presence && wait_time < OW_PRESENCE_MAX) {
@@ -81,10 +96,10 @@ esp_err_t ow_bus_reset(uint8_t pin) {
     esp_rom_delay_us(OW_RESET_TIME - OW_PRESENCE_WAIT - wait_time);
 
     if (wait_time >= OW_PRESENCE_MAX) {
-        ESP_LOGW(TAG, "No presence pulse detected");
+//        ESP_LOGW(TAG, "No presence pulse detected");
         return ESP_ERR_TIMEOUT;
     } else {
-        ESP_LOGD(TAG, "Device presence detected after %d µs", wait_time);
+//        ESP_LOGW(TAG, "Device presence detected after %d µs", wait_time);
         return ESP_OK;
     }
 }
@@ -92,8 +107,8 @@ esp_err_t ow_bus_reset(uint8_t pin) {
 esp_err_t ow_bus_init(uint8_t pin) {
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << pin),
-        .mode = GPIO_MODE_OUTPUT_OD,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .mode = GPIO_MODE_INPUT_OUTPUT_OD,
+//        .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE
     };
@@ -105,13 +120,12 @@ esp_err_t ow_bus_init(uint8_t pin) {
     }
 
     // Initialize bus in released (high) state
-    gpio_set_level(pin, 1);
-    esp_rom_delay_us(OW_RECOVERY);
+//    gpio_set_level(pin, 1);
+//    esp_rom_delay_us(OW_RECOVERY);
 
     return ESP_OK;
 }
 
-// Improved read/write functions with error checking
 esp_err_t ow_bus_write(uint8_t pin, const uint8_t *data, uint8_t size) {
     if (data == NULL || size == 0) {
         return ESP_ERR_INVALID_ARG;
@@ -143,4 +157,28 @@ esp_err_t ow_bus_read(uint8_t pin, uint8_t *data, uint8_t size) {
     taskEXIT_CRITICAL(&ow_mux);
 
     return ESP_OK;
+}
+
+OWD_t init_ow_device(uint8_t pin) {
+    OWD_t device = calloc(1, sizeof(struct OW_Device));
+    if (device == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for device");
+        return NULL;
+    }
+
+    device->pin = pin;
+
+    esp_err_t init_err = ow_bus_init(pin);
+    if (init_err != ESP_OK) {
+        free(device);
+        return NULL;
+    }
+
+    ESP_LOGI(TAG, "OneWire device initialized on pin %d", pin);
+
+    return device;
+}
+
+uint8_t get_ow_pin(OWD_t device) {
+    return device->pin;
 }

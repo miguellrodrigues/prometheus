@@ -18,7 +18,7 @@ struct I2C_Device {
  * @param master_bus The master_bus previously initialized
  * @return The I2C device
  */
-I2CD_t init_device(uint8_t address, i2c_master_bus_handle_t master_bus) {
+I2CD_t init_i2c_device(uint8_t address, i2c_master_bus_handle_t master_bus) {
     if (master_bus == NULL) {
         ESP_LOGE(TAG, "Master bus must not be NULL");
         return NULL;
@@ -155,6 +155,6 @@ void i2c_write_receive(I2CD_t device, uint8_t *data, uint8_t size, uint8_t *rece
  * @param device The i2c device
  * @return
  */
-uint8_t get_address(I2CD_t device) {
+uint8_t get_i2c_device_address(I2CD_t device) {
     return device->address;
 }
