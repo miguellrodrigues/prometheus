@@ -11,8 +11,6 @@
 #include <esp_err.h>
 #include <freertos/FreeRTOS.h>
 
-static portMUX_TYPE onewire_mux = portMUX_INITIALIZER_UNLOCKED;
-
 typedef struct OW_Device *OWD_t;
 
 void ow_read(OWD_t device, uint8_t *data, uint8_t size);

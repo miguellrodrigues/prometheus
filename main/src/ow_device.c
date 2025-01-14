@@ -3,7 +3,9 @@
 //
 
 #include <ow_device.h>
+
 #define TAG "OW_DEVICE"
+static portMUX_TYPE ow_mux = portMUX_INITIALIZER_UNLOCKED;
 
 // Timing constants in microseconds
 #define OW_RESET_TIME     480   // Reset pulse duration
@@ -115,13 +117,13 @@ esp_err_t ow_bus_write(uint8_t pin, const uint8_t *data, uint8_t size) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    taskENTER_CRITICAL(&onewire_mux);  // Disable interrupts during timing-critical section
+    taskENTER_CRITICAL(&ow_mux);  // Disable interrupts during timing-critical section
     for (uint8_t i = 0; i < size; i++) {
         for (uint8_t j = 0; j < 8; j++) {
             ow_write_bit(pin, (data[i] >> j) & 0x01);
         }
     }
-    taskEXIT_CRITICAL(&onewire_mux);
+    taskEXIT_CRITICAL(&ow_mux);
 
     return ESP_OK;
 }
@@ -131,14 +133,14 @@ esp_err_t ow_bus_read(uint8_t pin, uint8_t *data, uint8_t size) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    taskENTER_CRITICAL(&onewire_mux);  // Disable interrupts during timing-critical section
+    taskENTER_CRITICAL(&ow_mux);  // Disable interrupts during timing-critical section
     for (uint8_t i = 0; i < size; i++) {
         data[i] = 0;
         for (uint8_t j = 0; j < 8; j++) {
             data[i] |= (ow_read_bit(pin) << j);
         }
     }
-    taskEXIT_CRITICAL(&onewire_mux);
+    taskEXIT_CRITICAL(&ow_mux);
 
     return ESP_OK;
 }
