@@ -1,13 +1,15 @@
 #include <file_tools.h>
 #include <i2c_device.h>
-#include <keypad.h>
-#include <lcd.h>
 #include <ow_device.h>
 #include <spi_device.h>
+#include <entityx.h>
+
 #include <driver/gpio.h>
 #include <esp_spiffs.h>
 #include <esp_timer.h>
 #include <freertos/queue.h>
+#include <mqtt_client.h>
+#include <esp_wifi.h>
 
 /* Definitions */
 
@@ -43,7 +45,7 @@ uint8_t i2c_devices_address[2] = {0x00, 0x01};
 I2CD_t *i2c_devices = NULL;
 OWD_t *one_wire_devices = NULL;
 
-/* Sampling Used Variables */
+/* Sampling Used Variables & Queues */
 
 typedef struct {
     int64_t timestamp;
@@ -51,6 +53,14 @@ typedef struct {
 } sampling_event_t;
 
 QueueHandle_t temperature_queue;
+
+typedef struct {
+    float temperature;
+    float control_signal;
+    int64_t timestamp;
+} control_event_t;
+
+QueueHandle_t mqtt_queue;
 
 /* Spiffs & Files */
 
@@ -138,6 +148,7 @@ void setup_spiffs() {
     };
 
     ESP_ERROR_CHECK(esp_vfs_spiffs_register(&config));
+    ESP_LOGI(TAG, "SPIFFS mounted");
 }
 
 /* DS18B20 Functions */
@@ -274,19 +285,128 @@ void setup_sampling_timer() {
     ESP_ERROR_CHECK(esp_timer_start_periodic(timerHandle, SAMPLING_INTERVAL_MS * 1000));
 }
 
+/* WIFI */
+
+void setup_wifi() {
+    static char *WIFI_SSID = "ESP32";
+    static char *WIFI_PASS = "12345678";
+    static uint8_t MAX_CONNECTIONS = 4;
+
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_ap(); // Create the Wi-Fi interface for AP mode
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    /*wifi_config_t wifi_config = {.ap = {.ssid = WIFI_SSID, .ssid_len = strlen(
+            WIFI_SSID), .password = WIFI_PASS, .max_connection = MAX_CONNECTIONS, .authmode = WIFI_AUTH_WPA2_PSK, // Use WPA2 authentication
+    },};*/
+
+    // Allow open network if no password is provided
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP)); // Set to AP mode
+    // ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "Wi-Fi AP started. SSID: %s, Password: %s", WIFI_SSID, WIFI_PASS);
+}
+
+/* MQTT */
+
+static void mqtt_event_handler(void *args, esp_event_base_t base, int32_t id, void *data) {
+    esp_mqtt_event_handle_t event = data;
+
+    switch (id) {
+        case MQTT_EVENT_CONNECTED:
+            break;
+        case MQTT_EVENT_DISCONNECTED:
+            break;
+        case MQTT_EVENT_DATA:
+            break;
+        case MQTT_EVENT_ERROR:
+            break;
+        default:
+            break;
+    }
+}
+
+_Noreturn void mqtt_task(void *arg) {
+    esp_mqtt_client_config_t mqttConfig = {
+            .broker.address.uri = "",
+            .credentials = {
+                    .username = "",
+            }
+    };
+
+    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqttConfig);
+    esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, client);
+
+    while (1) {
+        control_event_t event;
+
+        if (xQueueReceive(mqtt_queue, &event, portMAX_DELAY)) {
+
+            // transform the event into a message
+            // char message[100];
+            // sprintf(message, "{\"temperature\": %.2f, \"control_signal\": %.2f}", event.temperature, event.control_signal);
+
+            esp_mqtt_client_publish(client, "topic", "data", 0, 0, 0);
+        }
+
+        vTaskDelay(50 / portTICK_PERIOD_MS);
+    }
+}
+
 /* Main */
 
 _Noreturn void app_main(void)
 {
+    /* Init Devices */
     one_wire_devices = setup_one_wire(one_wire_devices_pins, 1);
     i2c_devices = setup_i2c(i2c_devices_address, 2);
 
     ds18b20_set_resolution(one_wire_devices[DS18B20], DS18B20_RESOLUTION);
 
+    /* WIFI */
+
+    setup_wifi();
+
+    /* Sampling & MQTT Setup */
     temperature_queue = xQueueCreate(10, sizeof(sampling_event_t));
+    mqtt_queue = xQueueCreate(10, sizeof(control_event_t));
 
     setup_sampling_timer();
     xTaskCreatePinnedToCore(closed_loop_task, "closed_loop_task", 4096, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(mqtt_task, "mqtt_task", 4096, NULL, 5, NULL, 1);
+
+    /* Spiffs */
+    setup_spiffs();
+
+    /*
+
+    entityx_t *manager = entityx_create("spiffs/config.dat");
+
+    typedef struct {
+        float num[CONTROLLER_ORDER + 1];
+        float den[CONTROLLER_ORDER + 1];
+    } controller_data_t;
+
+    entityx_add(
+            manager,
+            &(controller_data_t) {
+                    .num = {1, 2, 3},
+                    .den = {1, 2, 3}
+            },
+            sizeof(controller_data_t),
+            ENTITY_TYPE_SENSOR,
+            NULL,
+            NULL
+            );
+
+    entityx_save(manager);
+
+    */
 
     while (1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
