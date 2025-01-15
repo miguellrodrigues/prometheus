@@ -4,17 +4,17 @@
 #include <spi_device.h>
 #include <entityx.h>
 
-#include <driver/gpio.h>
 #include <esp_spiffs.h>
 #include <esp_wifi.h>
 #include <esp_timer.h>
-#include <nvs_sec_provider.h>
+#include "esp_sleep.h"
 #include <freertos/queue.h>
 #include <mqtt_client.h>
+#include <nvs_flash.h>
 
 /* Definitions */
 
-#define TAG "PROMETHEUS"
+#define TAG "BDC_CONTROLLER"
 
 /* I2C Pins */
 #define I2C_SCL_IO GPIO_NUM_4
@@ -36,8 +36,12 @@
 
 /* Devices / Addresses / Pins */
 
-typedef enum { LCD, KEYPAD } i2c_device_id_t;
-typedef enum { DS18B20 } one_wire_device_id_t;
+typedef enum {
+    LCD, KEYPAD
+} i2c_device_id_t;
+typedef enum {
+    DS18B20
+} one_wire_device_id_t;
 
 uint8_t one_wire_devices_pins[1] = {GPIO_NUM_48};
 uint8_t i2c_devices_address[2] = {0x00, 0x01};
@@ -46,15 +50,28 @@ I2CD_t *i2c_devices = NULL;
 OWD_t *one_wire_devices = NULL;
 
 /* WIFI */
-#define WIFI_SSID "CEFET_UFMG_BDC"
-#define WIFI_PASS "58463525"
+#define ST_WIFI_SSID "RODRIGUES 2.4"
+#define ST_WIFI_PASS "@16@17@30"
+
+#define AP_WIFI_SSID "BDC_AP"
+#define AP_WIFI_PASS "41639549"
+
+#define WIFI_CONNECTED_BIT BIT0
+#define WIFI_FAIL_BIT BIT1
+#define MAXIMUM_RETRY  5
+
+static int s_retry_num = 0;
+static EventGroupHandle_t s_wifi_event_group;
+
+typedef enum {
+    WIFI_MODE_AP_ONLY, WIFI_MODE_STA_ONLY
+} wifi_operation_mode_t;
 
 /* MQTT */
 
-#define MQTT_URI "mqtt://192.168.4.2:1883"
 #define MQTT_USERNAME "ESP32"
-
 #define MQTT_TOPIC "/streaming/data"
+#define MQTT_URI "mqtt://192.168.4.2:1883"
 
 bool mqtt_connected = false;
 
@@ -74,23 +91,10 @@ typedef struct {
 QueueHandle_t mqtt_queue;
 QueueHandle_t temperature_queue;
 
-/* Spiffs & Files */
-
-void setup_spiffs();
-
 /* Communications Protocol Setup */
 
 I2CD_t *setup_i2c(uint8_t *addresses, uint8_t num_devices) {
-    i2c_master_bus_config_t bus_config = {
-            .clk_source = I2C_CLK_SRC_DEFAULT,
-            .i2c_port = -1,
-            .scl_io_num = I2C_SCL_IO,
-            .sda_io_num = I2C_SDA_IO,
-            .glitch_ignore_cnt = 7,
-            .flags = {
-                    .enable_internal_pullup = true
-            }
-    };
+    i2c_master_bus_config_t bus_config = {.clk_source = I2C_CLK_SRC_DEFAULT, .i2c_port = -1, .scl_io_num = I2C_SCL_IO, .sda_io_num = I2C_SDA_IO, .glitch_ignore_cnt = 7, .flags = {.enable_internal_pullup = true}};
 
     i2c_master_bus_handle_t bus_handle;
 
@@ -111,13 +115,7 @@ I2CD_t *setup_i2c(uint8_t *addresses, uint8_t num_devices) {
 }
 
 SPID_t *setup_spi(uint8_t *cs, uint8_t num_devices) {
-    spi_bus_config_t bus_config = {
-            .mosi_io_num = SPI_MOSI_IO,
-            .miso_io_num = SPI_MISO_IO,
-            .sclk_io_num = SPI_SCLK_IO,
-            .quadwp_io_num = -1,
-            .quadhd_io_num = -1,
-    };
+    spi_bus_config_t bus_config = {.mosi_io_num = SPI_MOSI_IO, .miso_io_num = SPI_MISO_IO, .sclk_io_num = SPI_SCLK_IO, .quadwp_io_num = -1, .quadhd_io_num = -1,};
 
     uint8_t host = SPI3_HOST;
 
@@ -153,13 +151,10 @@ OWD_t *setup_one_wire(uint8_t *pins, uint8_t num_devices) {
     return NULL;
 }
 
+/* Spiffs */
+
 void setup_spiffs() {
-    esp_vfs_spiffs_conf_t config = {
-            .base_path = "/spiffs",
-            .partition_label = NULL,
-            .max_files = 5,
-            .format_if_mount_failed = true
-    };
+    esp_vfs_spiffs_conf_t config = {.base_path = "/spiffs", .partition_label = NULL, .max_files = 5, .format_if_mount_failed = true};
 
     ESP_ERROR_CHECK(esp_vfs_spiffs_register(&config));
     ESP_LOGI(TAG, "SPIFFS mounted");
@@ -173,26 +168,28 @@ float ds18b20_read_temperature(OWD_t device) {
     uint8_t pin = get_ow_pin(device);
 
     ow_bus_reset(pin);
-    ow_bus_write(pin, (uint8_t[]){0xCC, 0x44}, 2);
+    ow_bus_write(pin, (uint8_t[]) {0xCC, 0x44}, 2);
 
     vTaskDelay(200 / portTICK_PERIOD_MS); // 200ms max for 10 bits
 
     ow_bus_reset(pin);
-    ow_bus_write(pin, (uint8_t[]){0xCC, 0xBE}, 2);
+    ow_bus_write(pin, (uint8_t[]) {0xCC, 0xBE}, 2);
     ow_bus_read(pin, data, 2);
 
-    return (float)((data[1] << 8 | data[0]) / 16.0);
+    return (float) ((data[1] << 8 | data[0]) / 16.0);
 }
 
 void ds18b20_set_resolution(OWD_t device, uint8_t resolution) {
     // resolution can be 9, 10, 11, or 12 bits
 
+    // 9 bits: 0.5°C
+    // 10 bits: 0.25°C
+    // 11 bits: 0.125°C
+    // 12 bits: 0.0625°C
+
     uint8_t pin = get_ow_pin(device);
 
-    static uint8_t RES_9_BIT  = 0x1F,
-            RES_10_BIT = 0x3F,
-            RES_11_BIT = 0x5F,
-            RES_12_BIT = 0x7F;
+    static uint8_t RES_9_BIT = 0x1F, RES_10_BIT = 0x3F, RES_11_BIT = 0x5F, RES_12_BIT = 0x7F;
 
     uint8_t res = RES_9_BIT;
 
@@ -209,10 +206,12 @@ void ds18b20_set_resolution(OWD_t device, uint8_t resolution) {
         case 12:
             res = RES_12_BIT;
             break;
+        default:
+            break;
     }
 
     ow_bus_reset(pin);
-    ow_bus_write(pin, (uint8_t[]){0xCC, 0x4E, res}, 2);
+    ow_bus_write(pin, (uint8_t[]) {0xCC, 0x4E, res}, 2);
     ow_bus_reset(pin);
 
     ow_bus_write(pin, (uint8_t[]) {0xCC, 0x48}, 2);
@@ -224,26 +223,15 @@ void sample_temperature(void *arg) {
 
     float temp = ds18b20_read_temperature(device);
 
-    sampling_event_t samplingEvent = {
-            .temperature = temp,
-            .timestamp = esp_timer_get_time()
-    };
+    sampling_event_t samplingEvent = {.temperature = temp, .timestamp = esp_timer_get_time()};
 
     xQueueSend(temperature_queue, &samplingEvent, 0);
 }
 
 /* Closed Loop Functions & Sampling */
 
-void compute_control_signal(
-        float y,
-        float *y_buffer,
-        float *u_buffer,
-
-        const float *controller_num,
-        const float *controller_den,
-
-        uint8_t n
-) {
+void compute_control_signal(float y, float *y_buffer, float *u_buffer, const float *controller_num,
+                            const float *controller_den, uint8_t n) {
     // compute control signal
 
     float u = controller_num[0] * y;
@@ -278,12 +266,7 @@ _Noreturn void closed_loop_task(void *arg) {
             int64_t timestamp = event.timestamp;
 
             if (mqtt_connected) {
-                control_event_t controlEvent = {
-                        .temperature = temp,
-                        .timestamp = timestamp,
-                        .control_signal = 0
-                };
-
+                control_event_t controlEvent = {.temperature = temp, .timestamp = timestamp, .control_signal = 0};
                 xQueueSend(mqtt_queue, &controlEvent, 0);
             }
         }
@@ -295,10 +278,7 @@ _Noreturn void closed_loop_task(void *arg) {
 void setup_sampling_timer() {
     esp_timer_handle_t timerHandle;
 
-    const esp_timer_create_args_t timerArgs = {
-            .callback = &sample_temperature,
-            .name = "temperature_sampling",
-    };
+    const esp_timer_create_args_t timerArgs = {.callback = &sample_temperature, .name = "temperature_sampling",};
 
     ESP_ERROR_CHECK(esp_timer_create(&timerArgs, &timerHandle));
     ESP_ERROR_CHECK(esp_timer_start_periodic(timerHandle, SAMPLING_INTERVAL_MS * 1000));
@@ -306,31 +286,78 @@ void setup_sampling_timer() {
 
 /* WIFI */
 
-void setup_wifi() {
-    static uint8_t MAX_CONNECTIONS = 4;
+static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        if (s_retry_num < MAXIMUM_RETRY) {
+            esp_wifi_connect();
+            s_retry_num++;
+            ESP_LOGI(TAG, "Error connecting to the AP, retrying...");
+        } else {
+            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+        }
+        ESP_LOGI(TAG, "Connection Failed");
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *) event_data;
+        ESP_LOGI(TAG, "IP:" IPSTR, IP2STR(&event->ip_info.ip));
+        s_retry_num = 0;
+        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+}
+
+void setup_wifi(wifi_operation_mode_t mode) {
+    s_wifi_event_group = xEventGroupCreate();
 
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_ap(); // Create the Wi-Fi interface for AP mode
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    wifi_config_t wifi_config = {
-            .ap = {
-                    .ssid = WIFI_SSID,
-                    .ssid_len = strlen(WIFI_SSID),
-                    .password = WIFI_PASS,
-                    .max_connection = MAX_CONNECTIONS,
-                    .authmode = WIFI_AUTH_WPA2_PSK,
-    },};
+    esp_event_handler_instance_t instance_any_id;
+    esp_event_handler_instance_t instance_got_ip;
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(
+            esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, &instance_any_id));
+    ESP_ERROR_CHECK(
+            esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL, &instance_got_ip));
 
-    ESP_LOGI(TAG, "Wi-Fi AP started. SSID: %s, Password: %s", WIFI_SSID, WIFI_PASS);
+    if (mode == WIFI_MODE_AP_ONLY) {
+        esp_netif_create_default_wifi_ap();
+
+        wifi_config_t ap_config = {.ap = {.ssid = AP_WIFI_SSID, .ssid_len = strlen(
+                AP_WIFI_SSID), .password = AP_WIFI_PASS, .channel = 1, .authmode = WIFI_AUTH_WPA2_PSK, .max_connection = 2,},};
+
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+        ESP_ERROR_CHECK(esp_wifi_start());
+
+        ESP_LOGI(TAG, "Starting AP");
+        ESP_LOGI(TAG, "AP SSID: %s, Password: %s", ap_config.ap.ssid, ap_config.ap.password);
+    } else if (mode == WIFI_MODE_STA_ONLY) {
+        esp_netif_create_default_wifi_sta();
+
+        wifi_config_t sta_config = {.sta = {.ssid = ST_WIFI_SSID, .password = ST_WIFI_PASS, .threshold.authmode = WIFI_AUTH_WPA2_PSK,},};
+
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
+        ESP_ERROR_CHECK(esp_wifi_start());
+
+        ESP_LOGI(TAG, "wifi_init_sta finished.");
+
+        EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE,
+                                               portMAX_DELAY);
+
+        if (bits & WIFI_CONNECTED_BIT) {
+            ESP_LOGI(TAG, "connecting to ap SSID:%s password:%s", ST_WIFI_SSID, ST_WIFI_PASS);
+        } else if (bits & WIFI_FAIL_BIT) {
+            ESP_LOGI(TAG, "Error connecting to SSID:%s, password:%s", ST_WIFI_SSID, ST_WIFI_PASS);
+        } else {
+            ESP_LOGE(TAG, "Unexpected event");
+        }
+    }
 }
 
 /* MQTT */
@@ -351,13 +378,7 @@ static void mqtt_event_handler(void *args, esp_event_base_t base, int32_t id, vo
 }
 
 _Noreturn void mqtt_task(void *arg) {
-    esp_mqtt_client_config_t mqttConfig = {
-            .broker.address.uri = MQTT_URI,
-            .credentials = {
-                    .username = MQTT_USERNAME,
-                    .client_id = "BDC_CONTROLLER",
-            }
-    };
+    esp_mqtt_client_config_t mqttConfig = {.broker.address.uri = MQTT_URI, .credentials = {.username = MQTT_USERNAME, .client_id = TAG,}};
 
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqttConfig);
     esp_mqtt_client_register_event(client, MQTT_EVENT_CONNECTED, mqtt_event_handler, client);
@@ -379,8 +400,7 @@ _Noreturn void mqtt_task(void *arg) {
 
 /* Main */
 
-_Noreturn void app_main(void)
-{
+_Noreturn void app_main(void) {
     /* Init Devices */
     one_wire_devices = setup_one_wire(one_wire_devices_pins, 1);
     i2c_devices = setup_i2c(i2c_devices_address, 2);
@@ -388,7 +408,7 @@ _Noreturn void app_main(void)
     ds18b20_set_resolution(one_wire_devices[DS18B20], DS18B20_RESOLUTION);
 
     /* WIFI */
-    setup_wifi();
+    setup_wifi(WIFI_MODE_AP_ONLY);
 
     /* Sampling & MQTT */
     temperature_queue = xQueueCreate(10, sizeof(sampling_event_t));
@@ -401,7 +421,6 @@ _Noreturn void app_main(void)
 
     /* Spiffs */
     setup_spiffs();
-
     while (1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
     }
