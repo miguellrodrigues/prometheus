@@ -1,7 +1,7 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="ESP32S3" type="com.jetbrains.cidr.embedded.openocd.conf.type" factoryName="com.jetbrains.cidr.embedded.openocd.conf.factory" REDIRECT_INPUT="false" ELEVATE="false" USE_EXTERNAL_CONSOLE="false" EMULATE_TERMINAL="false" PASS_PARENT_ENVS_2="true" PROJECT_NAME="prometheus" TARGET_NAME="app-flash" CONFIG_NAME="Debug" version="1" RUN_TARGET_PROJECT_NAME="prometheus" RUN_TARGET_NAME="prometheus.elf">
     <openocd version="1" gdb-port="3333" telnet-port="4444" board-config="board/esp32s3-builtin.cfg" reset-type="INIT" download-type="UPDATED_ONLY">
-      <debugger kind="GDB">$USER_HOME$/.espressif/tools/xtensa-esp-elf-gdb/14.2_20240403/xtensa-esp-elf-gdb/bin/xtensa-esp32-elf-gdb</debugger>
+      <debugger kind="GDB">$USER_HOME$/.espressif/tools/xtensa-esp-elf-gdb/14.2_20240403/xtensa-esp-elf-gdb/bin/xtensa-esp32s3-elf-gdb</debugger>
     </openocd>
     <method v="2">
       <option name="CLION.COMPOUND.BUILD" enabled="true" />

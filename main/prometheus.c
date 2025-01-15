@@ -6,10 +6,11 @@
 
 #include <driver/gpio.h>
 #include <esp_spiffs.h>
+#include <esp_wifi.h>
 #include <esp_timer.h>
+#include <nvs_sec_provider.h>
 #include <freertos/queue.h>
 #include <mqtt_client.h>
-#include <esp_wifi.h>
 
 /* Definitions */
 
@@ -22,11 +23,10 @@
 /* Sampling Period in MS */
 #define SAMPLING_INTERVAL_MS 7500
 
-/**/
+/* SPI */
 #define SPI_MOSI_IO 0
 #define SPI_MISO_IO 0
 #define SPI_SCLK_IO 0 // spi pins are not defined
-/**/
 
 /* Temperature Sensor Resolution in Bits */
 #define DS18B20_RESOLUTION 10
@@ -45,14 +45,25 @@ uint8_t i2c_devices_address[2] = {0x00, 0x01};
 I2CD_t *i2c_devices = NULL;
 OWD_t *one_wire_devices = NULL;
 
+/* WIFI */
+#define WIFI_SSID "CEFET_UFMG_BDC"
+#define WIFI_PASS "58463525"
+
+/* MQTT */
+
+#define MQTT_URI "mqtt://192.168.4.2:1883"
+#define MQTT_USERNAME "ESP32"
+
+#define MQTT_TOPIC "/streaming/data"
+
+bool mqtt_connected = false;
+
 /* Sampling Used Variables & Queues */
 
 typedef struct {
     int64_t timestamp;
     float temperature;
 } sampling_event_t;
-
-QueueHandle_t temperature_queue;
 
 typedef struct {
     float temperature;
@@ -61,6 +72,7 @@ typedef struct {
 } control_event_t;
 
 QueueHandle_t mqtt_queue;
+QueueHandle_t temperature_queue;
 
 /* Spiffs & Files */
 
@@ -132,6 +144,8 @@ OWD_t *setup_one_wire(uint8_t *pins, uint8_t num_devices) {
         for (uint8_t i = 0; i < num_devices; i++) {
             *(devices + i) = init_ow_device(pins[i]);
         }
+
+        ESP_LOGI(TAG, "One Wire devices initialized");
 
         return devices;
     }
@@ -263,10 +277,15 @@ _Noreturn void closed_loop_task(void *arg) {
             float temp = event.temperature;
             int64_t timestamp = event.timestamp;
 
-            ESP_LOGI(TAG, "Delta time: %lld", timestamp - last_timestamp);
-            last_timestamp = timestamp;
+            if (mqtt_connected) {
+                control_event_t controlEvent = {
+                        .temperature = temp,
+                        .timestamp = timestamp,
+                        .control_signal = 0
+                };
 
-            ESP_LOGI(TAG, "Temperature: %.2f", temp);
+                xQueueSend(mqtt_queue, &controlEvent, 0);
+            }
         }
 
         vTaskDelay(50 / portTICK_PERIOD_MS);
@@ -288,10 +307,9 @@ void setup_sampling_timer() {
 /* WIFI */
 
 void setup_wifi() {
-    static char *WIFI_SSID = "ESP32";
-    static char *WIFI_PASS = "12345678";
     static uint8_t MAX_CONNECTIONS = 4;
 
+    ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_create_default_wifi_ap(); // Create the Wi-Fi interface for AP mode
@@ -299,14 +317,17 @@ void setup_wifi() {
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    /*wifi_config_t wifi_config = {.ap = {.ssid = WIFI_SSID, .ssid_len = strlen(
-            WIFI_SSID), .password = WIFI_PASS, .max_connection = MAX_CONNECTIONS, .authmode = WIFI_AUTH_WPA2_PSK, // Use WPA2 authentication
-    },};*/
+    wifi_config_t wifi_config = {
+            .ap = {
+                    .ssid = WIFI_SSID,
+                    .ssid_len = strlen(WIFI_SSID),
+                    .password = WIFI_PASS,
+                    .max_connection = MAX_CONNECTIONS,
+                    .authmode = WIFI_AUTH_WPA2_PSK,
+    },};
 
-    // Allow open network if no password is provided
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP)); // Set to AP mode
-    // ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
     ESP_LOGI(TAG, "Wi-Fi AP started. SSID: %s, Password: %s", WIFI_SSID, WIFI_PASS);
@@ -319,12 +340,10 @@ static void mqtt_event_handler(void *args, esp_event_base_t base, int32_t id, vo
 
     switch (id) {
         case MQTT_EVENT_CONNECTED:
-            break;
-        case MQTT_EVENT_DISCONNECTED:
-            break;
-        case MQTT_EVENT_DATA:
-            break;
-        case MQTT_EVENT_ERROR:
+            esp_mqtt_client_subscribe(event->client, MQTT_TOPIC, 0);
+            mqtt_connected = true;
+
+            ESP_LOGI(TAG, "Connected to MQTT broker");
             break;
         default:
             break;
@@ -333,25 +352,26 @@ static void mqtt_event_handler(void *args, esp_event_base_t base, int32_t id, vo
 
 _Noreturn void mqtt_task(void *arg) {
     esp_mqtt_client_config_t mqttConfig = {
-            .broker.address.uri = "",
+            .broker.address.uri = MQTT_URI,
             .credentials = {
-                    .username = "",
+                    .username = MQTT_USERNAME,
+                    .client_id = "BDC_CONTROLLER",
             }
     };
 
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqttConfig);
-    esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, client);
+    esp_mqtt_client_register_event(client, MQTT_EVENT_CONNECTED, mqtt_event_handler, client);
+    esp_mqtt_client_start(client);
 
     while (1) {
         control_event_t event;
 
         if (xQueueReceive(mqtt_queue, &event, portMAX_DELAY)) {
+            char buff[16];
+            memcpy(buff, &event, sizeof(control_event_t));
 
-            // transform the event into a message
-            // char message[100];
-            // sprintf(message, "{\"temperature\": %.2f, \"control_signal\": %.2f}", event.temperature, event.control_signal);
+            esp_mqtt_client_publish(client, MQTT_TOPIC, buff, sizeof(buff), 1, 0);
 
-            esp_mqtt_client_publish(client, "topic", "data", 0, 0, 0);
         }
 
         vTaskDelay(50 / portTICK_PERIOD_MS);
@@ -369,44 +389,19 @@ _Noreturn void app_main(void)
     ds18b20_set_resolution(one_wire_devices[DS18B20], DS18B20_RESOLUTION);
 
     /* WIFI */
-
     setup_wifi();
 
-    /* Sampling & MQTT Setup */
+    /* Sampling & MQTT */
     temperature_queue = xQueueCreate(10, sizeof(sampling_event_t));
     mqtt_queue = xQueueCreate(10, sizeof(control_event_t));
 
     setup_sampling_timer();
+
     xTaskCreatePinnedToCore(closed_loop_task, "closed_loop_task", 4096, NULL, 5, NULL, 1);
     xTaskCreatePinnedToCore(mqtt_task, "mqtt_task", 4096, NULL, 5, NULL, 1);
 
     /* Spiffs */
     setup_spiffs();
-
-    /*
-
-    entityx_t *manager = entityx_create("spiffs/config.dat");
-
-    typedef struct {
-        float num[CONTROLLER_ORDER + 1];
-        float den[CONTROLLER_ORDER + 1];
-    } controller_data_t;
-
-    entityx_add(
-            manager,
-            &(controller_data_t) {
-                    .num = {1, 2, 3},
-                    .den = {1, 2, 3}
-            },
-            sizeof(controller_data_t),
-            ENTITY_TYPE_SENSOR,
-            NULL,
-            NULL
-            );
-
-    entityx_save(manager);
-
-    */
 
     while (1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
