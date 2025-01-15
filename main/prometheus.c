@@ -175,7 +175,7 @@ float ds18b20_read_temperature(OWD_t device) {
     ow_bus_reset(pin);
     ow_bus_write(pin, (uint8_t[]){0xCC, 0x44}, 2);
 
-    vTaskDelay(750 / portTICK_PERIOD_MS);
+    vTaskDelay(200 / portTICK_PERIOD_MS); // 200ms max for 10 bits
 
     ow_bus_reset(pin);
     ow_bus_write(pin, (uint8_t[]){0xCC, 0xBE}, 2);
@@ -219,7 +219,7 @@ void ds18b20_set_resolution(OWD_t device, uint8_t resolution) {
     vTaskDelay(20 / portTICK_PERIOD_MS);
 }
 
-void read_temperature(void *arg) {
+void sample_temperature(void *arg) {
     OWD_t device = one_wire_devices[DS18B20];
 
     float temp = ds18b20_read_temperature(device);
@@ -296,7 +296,7 @@ void setup_sampling_timer() {
     esp_timer_handle_t timerHandle;
 
     const esp_timer_create_args_t timerArgs = {
-            .callback = &read_temperature,
+            .callback = &sample_temperature,
             .name = "temperature_sampling",
     };
 
@@ -370,8 +370,7 @@ _Noreturn void mqtt_task(void *arg) {
             char buff[16];
             memcpy(buff, &event, sizeof(control_event_t));
 
-            esp_mqtt_client_publish(client, MQTT_TOPIC, buff, sizeof(buff), 1, 0);
-
+            esp_mqtt_client_publish(client, MQTT_TOPIC, buff, 16, 1, 0);
         }
 
         vTaskDelay(50 / portTICK_PERIOD_MS);
