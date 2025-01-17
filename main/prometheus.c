@@ -7,7 +7,6 @@
 #include <esp_spiffs.h>
 #include <esp_wifi.h>
 #include <esp_timer.h>
-#include "esp_sleep.h"
 #include <freertos/queue.h>
 #include <mqtt_client.h>
 #include <nvs_flash.h>
@@ -35,10 +34,10 @@
 #define CONTROLLER_ORDER 2
 
 /* Devices / Addresses / Pins */
-
 typedef enum {
     LCD, KEYPAD
 } i2c_device_id_t;
+
 typedef enum {
     DS18B20
 } one_wire_device_id_t;
@@ -52,16 +51,15 @@ OWD_t *one_wire_devices = NULL;
 /* WIFI */
 #define ST_WIFI_SSID "RODRIGUES 2.4"
 #define ST_WIFI_PASS "@16@17@30"
-
-#define AP_WIFI_SSID "BDC_AP"
-#define AP_WIFI_PASS "41639549"
-
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT BIT1
 #define MAXIMUM_RETRY  5
 
-static int s_retry_num = 0;
-static EventGroupHandle_t s_wifi_event_group;
+#define AP_WIFI_SSID "BDC_AP"
+#define AP_WIFI_PASS "41639549"
+
+int s_retry_num = 0;
+EventGroupHandle_t s_wifi_event_group;
 
 typedef enum {
     WIFI_MODE_AP_ONLY, WIFI_MODE_STA_ONLY
@@ -72,10 +70,11 @@ typedef enum {
 #define MQTT_USERNAME "ESP32"
 #define MQTT_TOPIC "/streaming/data"
 #define MQTT_URI "mqtt://192.168.4.2:1883"
+#define MQTT_PACKET_SIZE 16
 
 bool mqtt_connected = false;
 
-/* Sampling Used Variables & Queues */
+/* Sampling Variables & Queues */
 
 typedef struct {
     int64_t timestamp;
@@ -187,11 +186,11 @@ void ds18b20_set_resolution(OWD_t device, uint8_t resolution) {
     // 11 bits: 0.125°C
     // 12 bits: 0.0625°C
 
-    uint8_t pin = get_ow_pin(device);
 
     static uint8_t RES_9_BIT = 0x1F, RES_10_BIT = 0x3F, RES_11_BIT = 0x5F, RES_12_BIT = 0x7F;
 
     uint8_t res = RES_9_BIT;
+    uint8_t pin = get_ow_pin(device);
 
     switch (resolution) {
         case 9:
@@ -212,28 +211,16 @@ void ds18b20_set_resolution(OWD_t device, uint8_t resolution) {
 
     ow_bus_reset(pin);
     ow_bus_write(pin, (uint8_t[]) {0xCC, 0x4E, res}, 2);
-    ow_bus_reset(pin);
 
+    ow_bus_reset(pin);
     ow_bus_write(pin, (uint8_t[]) {0xCC, 0x48}, 2);
+
     vTaskDelay(20 / portTICK_PERIOD_MS);
 }
 
-void sample_temperature(void *arg) {
-    OWD_t device = one_wire_devices[DS18B20];
+/* Closed Loop Functions */
 
-    float temp = ds18b20_read_temperature(device);
-
-    sampling_event_t samplingEvent = {.temperature = temp, .timestamp = esp_timer_get_time()};
-
-    xQueueSend(temperature_queue, &samplingEvent, 0);
-}
-
-/* Closed Loop Functions & Sampling */
-
-void compute_control_signal(float y, float *y_buffer, float *u_buffer, const float *controller_num,
-                            const float *controller_den, uint8_t n) {
-    // compute control signal
-
+void compute_control_signal(float y, float *y_buffer, float *u_buffer, const float *controller_num, const float *controller_den, uint8_t n) {
     float u = controller_num[0] * y;
 
     for (uint8_t i = 1; i <= n; i++) {
@@ -252,11 +239,11 @@ void compute_control_signal(float y, float *y_buffer, float *u_buffer, const flo
 }
 
 _Noreturn void closed_loop_task(void *arg) {
-    static int64_t last_timestamp;
-    static float y_buffer[CONTROLLER_ORDER], u_buffer[CONTROLLER_ORDER];
+    int64_t last_timestamp;
+    float y_buffer[CONTROLLER_ORDER], u_buffer[CONTROLLER_ORDER];
 
-    static float controller_num[CONTROLLER_ORDER + 1] = {0};
-    static float controller_den[CONTROLLER_ORDER + 1] = {0};
+    float controller_num[CONTROLLER_ORDER + 1];
+    float controller_den[CONTROLLER_ORDER + 1];
 
     while (1) {
         sampling_event_t event;
@@ -275,6 +262,18 @@ _Noreturn void closed_loop_task(void *arg) {
     }
 }
 
+/* Sampling */
+
+void sample_temperature(void *arg) {
+    OWD_t device = one_wire_devices[DS18B20];
+
+    float temp = ds18b20_read_temperature(device);
+
+    sampling_event_t samplingEvent = {.temperature = temp, .timestamp = esp_timer_get_time()};
+
+    xQueueSend(temperature_queue, &samplingEvent, 0);
+}
+
 void setup_sampling_timer() {
     esp_timer_handle_t timerHandle;
 
@@ -286,7 +285,7 @@ void setup_sampling_timer() {
 
 /* WIFI */
 
-static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
+void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
@@ -319,10 +318,10 @@ void setup_wifi(wifi_operation_mode_t mode) {
     esp_event_handler_instance_t instance_any_id;
     esp_event_handler_instance_t instance_got_ip;
 
-    ESP_ERROR_CHECK(
-            esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, &instance_any_id));
-    ESP_ERROR_CHECK(
-            esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL, &instance_got_ip));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL,
+                                                        &instance_any_id));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL,
+                                                        &instance_got_ip));
 
     if (mode == WIFI_MODE_AP_ONLY) {
         esp_netif_create_default_wifi_ap();
@@ -384,14 +383,15 @@ _Noreturn void mqtt_task(void *arg) {
     esp_mqtt_client_register_event(client, MQTT_EVENT_CONNECTED, mqtt_event_handler, client);
     esp_mqtt_client_start(client);
 
+    char buff[MQTT_PACKET_SIZE] = {0};
+
     while (1) {
         control_event_t event;
 
         if (xQueueReceive(mqtt_queue, &event, portMAX_DELAY)) {
-            char buff[16];
             memcpy(buff, &event, sizeof(control_event_t));
-
-            esp_mqtt_client_publish(client, MQTT_TOPIC, buff, 16, 1, 0);
+            esp_mqtt_client_publish(client, MQTT_TOPIC, buff, MQTT_PACKET_SIZE, 1, 1);
+            memset(buff, 0, MQTT_PACKET_SIZE);
         }
 
         vTaskDelay(50 / portTICK_PERIOD_MS);
@@ -421,6 +421,7 @@ _Noreturn void app_main(void) {
 
     /* Spiffs */
     setup_spiffs();
+
     while (1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
     }
