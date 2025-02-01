@@ -7,10 +7,12 @@
 #include <esp_spiffs.h>
 #include <esp_wifi.h>
 #include <esp_timer.h>
-#include <freertos/queue.h>
 #include <mqtt_client.h>
 #include <nvs_flash.h>
 #include <math.h>
+#include <driver/mcpwm.h>
+#include <freertos/queue.h>
+
 
 /* Definitions */
 
@@ -114,6 +116,7 @@ control_state controlState = OPEN_LOOP;
 bool has_switched_state = false;
 
 #define OPEN_LOOP_CONTROL_SIGNAL 0.5f
+#define ACTUATE_GPIO GPIO_NUM_17
 
 /* Communications Protocol Setup */
 
@@ -242,6 +245,18 @@ void ds18b20_set_resolution(OWD_t device, uint8_t resolution) {
     vTaskDelay(20 / portTICK_PERIOD_MS);
 }
 
+/* PWM */
+
+void setup_pwm(uint16_t freq) {
+    mcpwm_config_t pwm_config = {.frequency = freq, .cmpr_a = 0, .cmpr_b = 0, .duty_mode = MCPWM_DUTY_MODE_0, .counter_mode = MCPWM_UP_COUNTER,};
+
+    mcpwm_init(MCPWM_UNIT_0, MCPWM_TIMER_0, &pwm_config);
+    mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM0A, ACTUATE_GPIO);
+    mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A, 0.0f);
+
+    ESP_LOGI(TAG, "PWM initialized");
+}
+
 /* Closed Loop Functions */
 
 bool is_near(float a, float b, float epsilon) {
@@ -266,6 +281,16 @@ void compute_control_signal(float y, float *y_buffer, float *u_buffer, uint8_t n
     u_buffer[0] = u;
 }
 
+void actuate(float control_signal) {
+    // apply static calibration
+    float u = control_signal + OPEN_LOOP_CONTROL_SIGNAL;
+
+    float duty_cycle = u*0.3f + 0.5f;
+
+    mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A, duty_cycle);
+    ESP_LOGI(TAG, "Actuating with control signal: %.2f", control_signal);
+}
+
 _Noreturn void control_loop_task(void *arg) {
     float y_buffer[CONTROLLER_ORDER], u_buffer[CONTROLLER_ORDER];
 
@@ -281,23 +306,22 @@ _Noreturn void control_loop_task(void *arg) {
                 has_switched_state = true;
             }
 
+            control_event_t controlEvent = {.temperature = temp, .timestamp = timestamp};
+
+            switch (controlState) {
+                case OPEN_LOOP:
+                    controlEvent.control_signal = OPEN_LOOP_CONTROL_SIGNAL;
+                case CLOSED_LOOP:
+                    compute_control_signal(temp - set_point, y_buffer, u_buffer, N + 1);
+                    controlEvent.control_signal = u_buffer[0];
+                default:
+                    controlEvent.control_signal = 0.0f;
+                    break;
+            }
+
+            actuate(controlEvent.control_signal);
+
             if (mqtt_connected) {
-                control_event_t controlEvent;
-
-                controlEvent.temperature = temp;
-                controlEvent.timestamp = timestamp;
-
-                switch (controlState) {
-                    case OPEN_LOOP:
-                        controlEvent.control_signal = OPEN_LOOP_CONTROL_SIGNAL;
-                    case CLOSED_LOOP:
-                        compute_control_signal(temp, y_buffer, u_buffer, N);
-                        controlEvent.control_signal = u_buffer[0];
-                    default:
-                        controlEvent.control_signal = 0.0f;
-                        break;
-                }
-
                 xQueueSend(mqtt_queue, &controlEvent, 0);
             }
         }
