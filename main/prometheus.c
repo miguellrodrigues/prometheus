@@ -10,6 +10,7 @@
 #include <freertos/queue.h>
 #include <mqtt_client.h>
 #include <nvs_flash.h>
+#include <math.h>
 
 /* Definitions */
 
@@ -68,7 +69,8 @@ typedef enum {
 /* MQTT */
 
 #define MQTT_USERNAME "ESP32"
-#define MQTT_TOPIC "/streaming/data"
+#define MQTT_TRANSMIT_TOPIC "/streaming/data"
+#define MQTT_RECEIVE_TOPIC "/control/data"
 #define MQTT_URI "mqtt://192.168.4.2:1883"
 #define MQTT_PACKET_SIZE 16
 
@@ -82,13 +84,36 @@ typedef struct {
 } sampling_event_t;
 
 typedef struct {
+    int64_t timestamp;
     float temperature;
     float control_signal;
-    int64_t timestamp;
 } control_event_t;
+
+typedef enum {
+    CLOSED_LOOP, OPEN_LOOP
+} control_state;
+
+typedef struct {
+    float set_point;
+    control_state state;
+} control_action_t;
 
 QueueHandle_t mqtt_queue;
 QueueHandle_t temperature_queue;
+
+/* Controller */
+
+uint8_t N;
+
+float *controller_num;
+float *controller_den;
+
+float set_point = 48.0f;
+control_state controlState = OPEN_LOOP;
+
+bool has_switched_state = false;
+
+#define OPEN_LOOP_CONTROL_SIGNAL 0.5f
 
 /* Communications Protocol Setup */
 
@@ -186,7 +211,6 @@ void ds18b20_set_resolution(OWD_t device, uint8_t resolution) {
     // 11 bits: 0.125°C
     // 12 bits: 0.0625°C
 
-
     static uint8_t RES_9_BIT = 0x1F, RES_10_BIT = 0x3F, RES_11_BIT = 0x5F, RES_12_BIT = 0x7F;
 
     uint8_t res = RES_9_BIT;
@@ -220,7 +244,11 @@ void ds18b20_set_resolution(OWD_t device, uint8_t resolution) {
 
 /* Closed Loop Functions */
 
-void compute_control_signal(float y, float *y_buffer, float *u_buffer, const float *controller_num, const float *controller_den, uint8_t n) {
+bool is_near(float a, float b, float epsilon) {
+    return fabsf(a - b) < epsilon;
+}
+
+void compute_control_signal(float y, float *y_buffer, float *u_buffer, uint8_t n) {
     float u = controller_num[0] * y;
 
     for (uint8_t i = 1; i <= n; i++) {
@@ -238,12 +266,8 @@ void compute_control_signal(float y, float *y_buffer, float *u_buffer, const flo
     u_buffer[0] = u;
 }
 
-_Noreturn void closed_loop_task(void *arg) {
-    int64_t last_timestamp;
+_Noreturn void control_loop_task(void *arg) {
     float y_buffer[CONTROLLER_ORDER], u_buffer[CONTROLLER_ORDER];
-
-    float controller_num[CONTROLLER_ORDER + 1];
-    float controller_den[CONTROLLER_ORDER + 1];
 
     while (1) {
         sampling_event_t event;
@@ -252,8 +276,28 @@ _Noreturn void closed_loop_task(void *arg) {
             float temp = event.temperature;
             int64_t timestamp = event.timestamp;
 
+            if (!has_switched_state && is_near(temp, set_point, 1.0f)) {
+                controlState = CLOSED_LOOP;
+                has_switched_state = true;
+            }
+
             if (mqtt_connected) {
-                control_event_t controlEvent = {.temperature = temp, .timestamp = timestamp, .control_signal = 0};
+                control_event_t controlEvent;
+
+                controlEvent.temperature = temp;
+                controlEvent.timestamp = timestamp;
+
+                switch (controlState) {
+                    case OPEN_LOOP:
+                        controlEvent.control_signal = OPEN_LOOP_CONTROL_SIGNAL;
+                    case CLOSED_LOOP:
+                        compute_control_signal(temp, y_buffer, u_buffer, N);
+                        controlEvent.control_signal = u_buffer[0];
+                    default:
+                        controlEvent.control_signal = 0.0f;
+                        break;
+                }
+
                 xQueueSend(mqtt_queue, &controlEvent, 0);
             }
         }
@@ -366,10 +410,21 @@ static void mqtt_event_handler(void *args, esp_event_base_t base, int32_t id, vo
 
     switch (id) {
         case MQTT_EVENT_CONNECTED:
-            esp_mqtt_client_subscribe(event->client, MQTT_TOPIC, 0);
+            esp_mqtt_client_subscribe(event->client, MQTT_TRANSMIT_TOPIC, 0);
             mqtt_connected = true;
 
             ESP_LOGI(TAG, "Connected to MQTT broker");
+            break;
+        case MQTT_EVENT_DATA:
+            if (strcmp(event->topic, MQTT_RECEIVE_TOPIC) == 0) {
+                control_action_t controlAction;
+                memcpy(&controlAction, event->data, sizeof(control_event_t));
+
+                set_point = controlAction.set_point;
+                controlState = controlAction.state;
+
+                ESP_LOGI(TAG, "Received control action: Set Point: %.2f, State: %d", set_point, controlState);
+            }
             break;
         default:
             break;
@@ -381,6 +436,7 @@ _Noreturn void mqtt_task(void *arg) {
 
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqttConfig);
     esp_mqtt_client_register_event(client, MQTT_EVENT_CONNECTED, mqtt_event_handler, client);
+    esp_mqtt_client_register_event(client, MQTT_EVENT_DATA, mqtt_event_handler, client);
     esp_mqtt_client_start(client);
 
     char buff[MQTT_PACKET_SIZE] = {0};
@@ -390,7 +446,7 @@ _Noreturn void mqtt_task(void *arg) {
 
         if (xQueueReceive(mqtt_queue, &event, portMAX_DELAY)) {
             memcpy(buff, &event, sizeof(control_event_t));
-            esp_mqtt_client_publish(client, MQTT_TOPIC, buff, MQTT_PACKET_SIZE, 1, 1);
+            esp_mqtt_client_publish(client, MQTT_TRANSMIT_TOPIC, buff, MQTT_PACKET_SIZE, 1, 1);
             memset(buff, 0, MQTT_PACKET_SIZE);
         }
 
@@ -399,11 +455,10 @@ _Noreturn void mqtt_task(void *arg) {
 }
 
 /* Main */
-
 _Noreturn void app_main(void) {
     /* Init Devices */
     one_wire_devices = setup_one_wire(one_wire_devices_pins, 1);
-    i2c_devices = setup_i2c(i2c_devices_address, 2);
+    /* i2c_devices = setup_i2c(i2c_devices_address, 2); */
 
     ds18b20_set_resolution(one_wire_devices[DS18B20], DS18B20_RESOLUTION);
 
@@ -416,11 +471,20 @@ _Noreturn void app_main(void) {
 
     setup_sampling_timer();
 
-    xTaskCreatePinnedToCore(closed_loop_task, "closed_loop_task", 4096, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(control_loop_task, "control_loop_task", 4096, NULL, 5, NULL, 0);
     xTaskCreatePinnedToCore(mqtt_task, "mqtt_task", 4096, NULL, 5, NULL, 1);
 
     /* Spiffs */
     setup_spiffs();
+
+    /* Controller */
+    N = CONTROLLER_ORDER;
+
+    controller_num = calloc(N + 1, sizeof(float));
+    controller_den = calloc(N + 1, sizeof(float));
+
+    controller_num = (float[]) {-0.0115885f, -0.00030283f, 0.01128568f};
+    controller_den = (float[]) {1.0f, -1.81818182f, 0.81818182f};
 
     while (1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
