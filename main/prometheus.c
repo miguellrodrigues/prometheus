@@ -10,7 +10,7 @@
 #include <mqtt_client.h>
 #include <nvs_flash.h>
 #include <math.h>
-#include <driver/mcpwm.h>
+#include <driver/mcpwm_prelude.h>
 #include <freertos/queue.h>
 
 
@@ -77,8 +77,9 @@ typedef enum {
 #define MQTT_PACKET_SIZE 16
 
 bool mqtt_connected = false;
+bool disconnect_mqtt = false;
 
-/* Sampling Variables & Queues */
+/* Sampling Variables & Queues & Control */
 
 typedef struct {
     int64_t timestamp;
@@ -105,8 +106,6 @@ QueueHandle_t temperature_queue;
 
 /* Controller */
 
-uint8_t N;
-
 float *controller_num;
 float *controller_den;
 
@@ -117,6 +116,8 @@ bool has_switched_state = false;
 
 #define OPEN_LOOP_CONTROL_SIGNAL 0.5f
 #define ACTUATE_GPIO GPIO_NUM_17
+
+mcpwm_cmpr_handle_t pwmComparator;
 
 /* Communications Protocol Setup */
 
@@ -247,12 +248,46 @@ void ds18b20_set_resolution(OWD_t device, uint8_t resolution) {
 
 /* PWM */
 
-void setup_pwm(uint16_t freq) {
-    mcpwm_config_t pwm_config = {.frequency = freq, .cmpr_a = 0, .cmpr_b = 0, .duty_mode = MCPWM_DUTY_MODE_0, .counter_mode = MCPWM_UP_COUNTER,};
+void setup_pwm() {
+    mcpwm_timer_handle_t timerHandle;
 
-    mcpwm_init(MCPWM_UNIT_0, MCPWM_TIMER_0, &pwm_config);
-    mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM0A, ACTUATE_GPIO);
-    mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A, 0.0f);
+    mcpwm_timer_config_t timerConfig = {.group_id = 0, .clk_src = MCPWM_TIMER_CLK_SRC_DEFAULT, .resolution_hz = 20 *
+                                                                                                                1000 *
+                                                                                                                1000, .count_mode = MCPWM_TIMER_COUNT_MODE_UP, .period_ticks =
+    (1 << 10) - 1, // 1024 ticks (10 bits resolution)
+    };
+
+    ESP_ERROR_CHECK(mcpwm_new_timer(&timerConfig, &timerHandle));
+
+    mcpwm_oper_handle_t oper;
+    mcpwm_operator_config_t oper_config = {.group_id = 0  // Use MCPWM group 0
+    };
+
+    ESP_ERROR_CHECK(mcpwm_new_operator(&oper_config, &oper));
+    ESP_ERROR_CHECK(mcpwm_operator_connect_timer(oper, timerHandle));
+
+    mcpwm_comparator_config_t cmpr_config = {.flags.update_cmp_on_tez = true  // Update at timer zero event
+    };
+    ESP_ERROR_CHECK(mcpwm_new_comparator(oper, &cmpr_config, &pwmComparator));
+
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(pwmComparator, 0)); // Example: 1.5ms pulse width
+
+    mcpwm_gen_handle_t generator = NULL;
+    mcpwm_generator_config_t gen_config = {.gen_gpio_num = ACTUATE_GPIO,};
+    ESP_ERROR_CHECK(mcpwm_new_generator(oper, &gen_config, &generator));
+
+    ESP_ERROR_CHECK(mcpwm_generator_set_action_on_timer_event(generator,
+                                                              MCPWM_GEN_TIMER_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP,
+                                                                                           MCPWM_TIMER_EVENT_EMPTY,
+                                                                                           MCPWM_GEN_ACTION_HIGH)));
+
+    ESP_ERROR_CHECK(mcpwm_generator_set_action_on_compare_event(generator,
+                                                                MCPWM_GEN_COMPARE_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP,
+                                                                                               pwmComparator,
+                                                                                               MCPWM_GEN_ACTION_LOW)));
+
+    ESP_ERROR_CHECK(mcpwm_timer_enable(timerHandle));
+    ESP_ERROR_CHECK(mcpwm_timer_start_stop(timerHandle, MCPWM_TIMER_START_NO_STOP));
 
     ESP_LOGI(TAG, "PWM initialized");
 }
@@ -271,6 +306,8 @@ void compute_control_signal(float y, float *y_buffer, float *u_buffer, uint8_t n
         u -= controller_den[i] * u_buffer[i - 1];
     }
 
+    u /= controller_den[0];
+
     // update buffers
     for (uint8_t i = n - 1; i > 0; i--) {
         y_buffer[i] = y_buffer[i - 1];
@@ -282,17 +319,21 @@ void compute_control_signal(float y, float *y_buffer, float *u_buffer, uint8_t n
 }
 
 void actuate(float control_signal) {
-    // apply static calibration
     float u = control_signal + OPEN_LOOP_CONTROL_SIGNAL;
+    // apply static calibration
+    float duty_cycle = u * 0.3f + 0.5f; // change this to the correct calibration from (control unit to duty cycle)
 
-    float duty_cycle = u*0.3f + 0.5f;
-
-    mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A, duty_cycle);
+    mcpwm_comparator_set_compare_value(pwmComparator, (uint16_t) duty_cycle);
     ESP_LOGI(TAG, "Actuating with control signal: %.2f", control_signal);
 }
 
 _Noreturn void control_loop_task(void *arg) {
-    float y_buffer[CONTROLLER_ORDER], u_buffer[CONTROLLER_ORDER];
+    float y_buffer[CONTROLLER_ORDER + 1], u_buffer[CONTROLLER_ORDER + 1];
+
+    for (uint8_t i = 0; i < CONTROLLER_ORDER + 1; i++) {
+        y_buffer[i] = 0.0f;
+        u_buffer[i] = OPEN_LOOP_CONTROL_SIGNAL;
+    }
 
     while (1) {
         sampling_event_t event;
@@ -310,9 +351,17 @@ _Noreturn void control_loop_task(void *arg) {
 
             switch (controlState) {
                 case OPEN_LOOP:
+                    // shift buffers
+                    for (uint8_t i = CONTROLLER_ORDER; i > 0; i--) {
+                        y_buffer[i] = y_buffer[i - 1];
+                    }
+
+                    // update buffer
+                    y_buffer[0] = temp;
+
                     controlEvent.control_signal = OPEN_LOOP_CONTROL_SIGNAL;
                 case CLOSED_LOOP:
-                    compute_control_signal(temp - set_point, y_buffer, u_buffer, N + 1);
+                    compute_control_signal(temp - set_point, y_buffer, u_buffer, CONTROLLER_ORDER + 1);
                     controlEvent.control_signal = u_buffer[0];
                 default:
                     controlEvent.control_signal = 0.0f;
@@ -333,9 +382,7 @@ _Noreturn void control_loop_task(void *arg) {
 /* Sampling */
 
 void sample_temperature(void *arg) {
-    OWD_t device = one_wire_devices[DS18B20];
-
-    float temp = ds18b20_read_temperature(device);
+    float temp = ds18b20_read_temperature(one_wire_devices[DS18B20]);
 
     sampling_event_t samplingEvent = {.temperature = temp, .timestamp = esp_timer_get_time()};
 
@@ -456,11 +503,10 @@ static void mqtt_event_handler(void *args, esp_event_base_t base, int32_t id, vo
 }
 
 _Noreturn void mqtt_task(void *arg) {
-    esp_mqtt_client_config_t mqttConfig = {.broker.address.uri = MQTT_URI, .credentials = {.username = MQTT_USERNAME, .client_id = TAG,}};
+    esp_mqtt_client_config_t mqttConfig = {.broker.address.uri = MQTT_URI, .credentials = {.username = MQTT_USERNAME, .client_id = TAG}};
 
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqttConfig);
-    esp_mqtt_client_register_event(client, MQTT_EVENT_CONNECTED, mqtt_event_handler, client);
-    esp_mqtt_client_register_event(client, MQTT_EVENT_DATA, mqtt_event_handler, client);
+    esp_mqtt_client_register_event(client, MQTT_EVENT_ANY, mqtt_event_handler, client);
     esp_mqtt_client_start(client);
 
     char buff[MQTT_PACKET_SIZE] = {0};
@@ -482,12 +528,18 @@ _Noreturn void mqtt_task(void *arg) {
 _Noreturn void app_main(void) {
     /* Init Devices */
     one_wire_devices = setup_one_wire(one_wire_devices_pins, 1);
-    /* i2c_devices = setup_i2c(i2c_devices_address, 2); */
+    i2c_devices = setup_i2c(i2c_devices_address, 2);
 
     ds18b20_set_resolution(one_wire_devices[DS18B20], DS18B20_RESOLUTION);
 
     /* WIFI */
     setup_wifi(WIFI_MODE_AP_ONLY);
+
+    /* Controller */
+    setup_pwm();
+
+    controller_num = (float[]) {-0.0115885f, -0.00030283f, 0.01128568f};
+    controller_den = (float[]) {1.0f, -1.81818182f, 0.81818182f};
 
     /* Sampling & MQTT */
     temperature_queue = xQueueCreate(10, sizeof(sampling_event_t));
@@ -500,15 +552,6 @@ _Noreturn void app_main(void) {
 
     /* Spiffs */
     setup_spiffs();
-
-    /* Controller */
-    N = CONTROLLER_ORDER;
-
-    controller_num = calloc(N + 1, sizeof(float));
-    controller_den = calloc(N + 1, sizeof(float));
-
-    controller_num = (float[]) {-0.0115885f, -0.00030283f, 0.01128568f};
-    controller_den = (float[]) {1.0f, -1.81818182f, 0.81818182f};
 
     while (1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
