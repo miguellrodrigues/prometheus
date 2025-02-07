@@ -52,8 +52,8 @@ I2CD_t *i2c_devices = NULL;
 OWD_t *one_wire_devices = NULL;
 
 /* WIFI */
-#define ST_WIFI_SSID "RODRIGUES 2.4"
-#define ST_WIFI_PASS "@16@17@30"
+#define ST_WIFI_SSID ""
+#define ST_WIFI_PASS ""
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT BIT1
 #define MAXIMUM_RETRY  5
@@ -375,7 +375,7 @@ _Noreturn void control_loop_task(void *arg) {
             }
         }
 
-        vTaskDelay(50 / portTICK_PERIOD_MS);
+        vTaskDelay(20 / portTICK_PERIOD_MS);
     }
 }
 
@@ -520,7 +520,7 @@ _Noreturn void mqtt_task(void *arg) {
             memset(buff, 0, MQTT_PACKET_SIZE);
         }
 
-        vTaskDelay(50 / portTICK_PERIOD_MS);
+        vTaskDelay(20 / portTICK_PERIOD_MS);
     }
 }
 
