@@ -11,7 +11,7 @@
  * @param path The path to the file
  * @return
  */
-uint8_t file_exists(const char *path) {
+uint8_t fileExists(const char *path) {
     FILE *file = fopen(path, "r");
     if (file) {
         fclose(file);
@@ -26,7 +26,7 @@ uint8_t file_exists(const char *path) {
  * @param mode The opening mode
  * @return
  */
-FILE *open_file(const char *path, const char *mode) {
+FILE *openFile(const char *path, const char *mode) {
     FILE *file = fopen(path, mode);
     if (!file) {
         ESP_LOGE(TAG, "Failed to open file: %s", path);
@@ -39,7 +39,7 @@ FILE *open_file(const char *path, const char *mode) {
  * @broef Close a file
  * @param file The file
  */
-void close_file(FILE *file) {
+void closeFile(FILE *file) {
     fclose(file);
 }
 
@@ -47,13 +47,13 @@ void close_file(FILE *file) {
  * @brief Dump a file in hexadecimal
  * @param file The file to dump
  */
-void dump_file_hex(const char *path) {
+void dumpFileHex(const char *path) {
     if (!path) {
         ESP_LOGE(TAG, "File path is NULL");
         return;
     }
 
-    FILE *f = open_file(path, "r");
+    FILE *f = openFile(path, "r");
 
     // Get the file size
     fseek(f, 0, SEEK_END);
@@ -65,7 +65,7 @@ void dump_file_hex(const char *path) {
 
     if (!buffer) {
         ESP_LOGE(TAG, "Failed to allocate buffer");
-        close_file(f);
+        closeFile(f);
         return;
     }
 
@@ -78,18 +78,24 @@ void dump_file_hex(const char *path) {
     printf("\n");
 
     free(buffer);
-    close_file(f);
+    closeFile(f);
 }
 
 /**
  * @brief Create a file
  * @param path Path to create the file
  */
-void create_file(const char *path) {
-    FILE *file = open_file(path, "w+");
+void createFile(const char *path) {
+    FILE *file = openFile(path, "w+");
     if (!file) {
         ESP_LOGE(TAG, "Failed to create file: %s", path);
         return;
     }
-    close_file(file);
+    closeFile(file);
+}
+
+void deleteFile(const char *path) {
+    if (remove(path) != 0) {
+        ESP_LOGE(TAG, "Failed to delete file: %s", path);
+    }
 }

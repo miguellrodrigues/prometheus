@@ -16,7 +16,7 @@ struct SPI_Device {
  * @param flags SPI Device flags (half-duplex, etc)
  * @return The SPI Device
  */
-SPID_t init_spi_device(spi_host_device_t host, uint8_t chip_select, uint8_t flags) {
+SPID_t initSpiDevice(spi_host_device_t host, uint8_t chip_select, uint8_t flags) {
     SPID_t device = calloc(1, sizeof(struct SPI_Device));
 
     if (device == NULL) {
@@ -58,7 +58,7 @@ SPID_t init_spi_device(spi_host_device_t host, uint8_t chip_select, uint8_t flag
  * @param data The buffer to receive the data
  * @param size The size of the buffer to receive data
  */
-void spi_read(SPID_t device, uint8_t reg, uint8_t *data, uint8_t size) {
+void spiRead(SPID_t device, uint8_t reg, uint8_t *data, uint8_t size) {
     if (device == NULL) {
         ESP_LOGE(TAG, "Device cannot be null!");
         return;
@@ -107,7 +107,7 @@ void spi_read(SPID_t device, uint8_t reg, uint8_t *data, uint8_t size) {
  * @param data The data to write (data[0] must be the register)
  * @param size Size of the data to write
  */
-void spi_write(SPID_t device, const uint8_t *data, uint8_t size) {
+void spiWrite(SPID_t device, const uint8_t *data, uint8_t size) {
     if (device == NULL) {
         ESP_LOGE(TAG, "Device cannot be null!");
         return;

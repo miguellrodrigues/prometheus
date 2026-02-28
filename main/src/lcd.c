@@ -31,7 +31,7 @@
  * @param lcd The i2c device
  * @param cmd The command to send
  */
-void lcd_send_cmd(I2CD_t lcd, uint8_t cmd) {
+void lcdSendCmd(I2CD_t lcd, uint8_t cmd) {
     uint8_t data_u, data_l;
     uint8_t data_t[4];
 
@@ -42,7 +42,7 @@ void lcd_send_cmd(I2CD_t lcd, uint8_t cmd) {
     data_t[2] = data_l | 0x0C;  //en=1, rs=0
     data_t[3] = data_l | 0x08;  //en=0, rs=0
 
-    i2c_write(lcd, data_t, 4);
+    i2CWrite(lcd, data_t, 4);
 }
 
 /**
@@ -50,7 +50,7 @@ void lcd_send_cmd(I2CD_t lcd, uint8_t cmd) {
  * @param lcd The i2c device
  * @param data The data to send
  */
-void lcd_send_data(I2CD_t lcd, uint8_t data) {
+void lcdSendData(I2CD_t lcd, uint8_t data) {
     uint8_t data_u, data_l;
     uint8_t data_t[4];
 
@@ -62,7 +62,7 @@ void lcd_send_data(I2CD_t lcd, uint8_t data) {
     data_t[2] = data_l | 0x0D;  //en=1, rs=0
     data_t[3] = data_l | 0x09;  //en=0, rs=0
 
-    i2c_write(lcd, data_t, 4);
+    i2CWrite(lcd, data_t, 4);
 }
 
 /**
@@ -70,8 +70,8 @@ void lcd_send_data(I2CD_t lcd, uint8_t data) {
  * @param lcd The i2c device
  * @param str The string to send
  */
-void lcd_send_string(I2CD_t lcd, char *str) {
-    while (*str) lcd_send_data(lcd, *str++);
+void lcdSendString(I2CD_t lcd, char *str) {
+    while (*str) lcdSendData(lcd, *str++);
 }
 
 /**
@@ -80,17 +80,17 @@ void lcd_send_string(I2CD_t lcd, char *str) {
  * @param row The row (0 or 1)
  * @param col The col (0 to 15)
  */
-void lcd_put_cur(I2CD_t lcd, int row, int col) {
+void lcdPutCur(I2CD_t lcd, int row, int col) {
     uint8_t command = (row == 0) ? (col | 0x80) : (col | 0xC0);
-    lcd_send_cmd(lcd, command);
+    lcdSendCmd(lcd, command);
 }
 
 /**
  * @brief Clear the LCD
  * @param lcd The i2c device
  */
-void lcd_clear(I2CD_t lcd) {
-    lcd_send_cmd(lcd, 0x01);
+void lcdClear(I2CD_t lcd) {
+    lcdSendCmd(lcd, 0x01);
     vTaskDelay(pdMS_TO_TICKS(200));
 }
 
@@ -98,16 +98,16 @@ void lcd_clear(I2CD_t lcd) {
  * @brief Send a custom character to the LCD
  * @param lcd The i2c device
  * @param str The string to send
- * @param pos_x X position
- * @param pos_y Y position
+ * @param posX X position
+ * @param posY Y position
  */
-void lcd_send_custom(I2CD_t lcd, char *str, uint8_t pos_x, uint8_t pos_y) {
-    lcd_send_cmd(lcd, 0x40);
+void lcdSendCustom(I2CD_t lcd, char *str, uint8_t posX, uint8_t posY) {
+    lcdSendCmd(lcd, 0x40);
     for (int i = 0; i < 8; ++i) {
-        lcd_send_data(lcd, str[i]);
+        lcdSendData(lcd, str[i]);
     }
-    lcd_put_cur(lcd, pos_x, pos_y);
-    lcd_send_data(lcd, 0);
+    lcdPutCur(lcd, posX, posY);
+    lcdSendData(lcd, 0);
     free(str);
 }
 
@@ -115,40 +115,40 @@ void lcd_send_custom(I2CD_t lcd, char *str, uint8_t pos_x, uint8_t pos_y) {
  * @brief Update a value in the LCD
  * @param lcd The i2c device
  * @param string The string to update
- * @param value The value to update
- * @param pos_x X position
- * @param pos_y Y position
+ * @param valor The value to update
+ * @param posX X position
+ * @param posY Y position
  */
-void update_value(I2CD_t lcd, char *string, float value, uint8_t pos_x, uint8_t pos_y) {
-    sprintf(string, "%5.1f", value);
-    lcd_put_cur(lcd, pos_x, pos_y);
-    lcd_send_string(lcd, string);
+void updateValue(I2CD_t lcd, char *string, float valor, uint8_t posX, uint8_t posY) {
+    sprintf(string, "%5.1f", valor);
+    lcdPutCur(lcd, posX, posY);
+    lcdSendString(lcd, string);
 }
 
 /**
  * @brief Initialize the LCD
- * @param lcd The i2c device
+ * @param ldc The i2c device
  */
-void lcd_init(I2CD_t lcd) {
+void lcdInit(I2CD_t ldc) {
     usleep(50000);
-    lcd_send_cmd(lcd, 0x30);
+    lcdSendCmd(ldc, 0x30);
     usleep(5000);
-    lcd_send_cmd(lcd, 0x30);
+    lcdSendCmd(ldc, 0x30);
     usleep(200);
-    lcd_send_cmd(lcd, 0x30);
+    lcdSendCmd(ldc, 0x30);
     usleep(10000);
-    lcd_send_cmd(lcd, 0x20);
+    lcdSendCmd(ldc, 0x20);
     usleep(10000);
 
-    lcd_send_cmd(lcd, 0x28);
+    lcdSendCmd(ldc, 0x28);
     usleep(1000);
-    lcd_send_cmd(lcd, 0x08);
+    lcdSendCmd(ldc, 0x08);
     usleep(1000);
-    lcd_send_cmd(lcd, 0x01);
+    lcdSendCmd(ldc, 0x01);
     usleep(1000);
     usleep(1000);
-    lcd_send_cmd(lcd, 0x06);
+    lcdSendCmd(ldc, 0x06);
     usleep(1000);
-    lcd_send_cmd(lcd, 0x0C);
+    lcdSendCmd(ldc, 0x0C);
     usleep(1000);
 }

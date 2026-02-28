@@ -69,7 +69,7 @@ static uint8_t ow_read_bit(uint8_t pin) {
     return bit;
 }
 
-esp_err_t ow_bus_reset(uint8_t pin) {
+esp_err_t owBusReset(uint8_t pin) {
     uint8_t presence = 1;
     uint16_t wait_time = 0;
 
@@ -104,11 +104,11 @@ esp_err_t ow_bus_reset(uint8_t pin) {
     }
 }
 
-esp_err_t ow_bus_init(uint8_t pin) {
+esp_err_t owBusInit(uint8_t pin) {
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << pin),
         .mode = GPIO_MODE_INPUT_OUTPUT_OD,
-//        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE
     };
@@ -126,7 +126,7 @@ esp_err_t ow_bus_init(uint8_t pin) {
     return ESP_OK;
 }
 
-esp_err_t ow_bus_write(uint8_t pin, const uint8_t *data, uint8_t size) {
+esp_err_t owBusWrite(uint8_t pin, const uint8_t *data, uint8_t size) {
     if (data == NULL || size == 0) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -142,7 +142,7 @@ esp_err_t ow_bus_write(uint8_t pin, const uint8_t *data, uint8_t size) {
     return ESP_OK;
 }
 
-esp_err_t ow_bus_read(uint8_t pin, uint8_t *data, uint8_t size) {
+esp_err_t owBusRead(uint8_t pin, uint8_t *data, uint8_t size) {
     if (data == NULL || size == 0) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -159,7 +159,7 @@ esp_err_t ow_bus_read(uint8_t pin, uint8_t *data, uint8_t size) {
     return ESP_OK;
 }
 
-OWD_t init_ow_device(uint8_t pin) {
+OWD_t initOwDevice(uint8_t pin) {
     OWD_t device = calloc(1, sizeof(struct OW_Device));
     if (device == NULL) {
         ESP_LOGE(TAG, "Failed to allocate memory for device");
@@ -168,7 +168,7 @@ OWD_t init_ow_device(uint8_t pin) {
 
     device->pin = pin;
 
-    esp_err_t init_err = ow_bus_init(pin);
+    esp_err_t init_err = owBusInit(pin);
     if (init_err != ESP_OK) {
         free(device);
         return NULL;
@@ -179,6 +179,6 @@ OWD_t init_ow_device(uint8_t pin) {
     return device;
 }
 
-uint8_t get_ow_pin(OWD_t device) {
+uint8_t getOwPin(OWD_t device) {
     return device->pin;
 }

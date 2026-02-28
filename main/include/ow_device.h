@@ -10,13 +10,13 @@
 
 typedef struct OW_Device *OWD_t;
 
-void ow_read(OWD_t device, uint8_t *data, uint8_t size);
-void ow_write(OWD_t device, uint8_t *data, uint8_t size);
-OWD_t init_ow_device(uint8_t pin);
+void owRead(OWD_t device, uint8_t *data, uint8_t size);
+void owWrite(OWD_t device, uint8_t *data, uint8_t size);
+OWD_t initOwDevice(uint8_t pin);
 
-uint8_t get_ow_pin(OWD_t device);
+uint8_t getOwPin(OWD_t device);
 
-esp_err_t ow_bus_init(uint8_t pin);
-esp_err_t ow_bus_read(uint8_t pin, uint8_t *data, uint8_t size);
-esp_err_t ow_bus_write(uint8_t pin, const uint8_t *data, uint8_t size);
-esp_err_t ow_bus_reset(uint8_t pin);
+esp_err_t owBusInit(uint8_t pin);
+esp_err_t owBusRead(uint8_t pin, uint8_t *data, uint8_t size);
+esp_err_t owBusWrite(uint8_t pin, const uint8_t *data, uint8_t size);
+esp_err_t owBusReset(uint8_t pin);

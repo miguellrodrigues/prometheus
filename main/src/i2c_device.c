@@ -15,16 +15,16 @@ struct I2C_Device {
 /**
  * @brief Initialize an I2C device
  * @param address The i2c address of the slave
- * @param master_bus The master_bus previously initialized
+ * @param masterBus The masterBus previously initialized
  * @return The I2C device
  */
-I2CD_t init_i2c_device(uint8_t address, i2c_master_bus_handle_t master_bus) {
-    if (master_bus == NULL) {
+I2CD_t initI2CDevice(uint8_t address, i2c_master_bus_handle_t masterBus) {
+    if (masterBus == NULL) {
         ESP_LOGE(TAG, "Master bus must not be NULL");
         return NULL;
     }
 
-    I2CD_t device = calloc(1, sizeof(I2CD_t));
+    I2CD_t device = calloc(1, sizeof(struct I2C_Device));;
 
     i2c_device_config_t config = {
             .dev_addr_length = I2C_ADDR_BIT_LEN_7,
@@ -33,7 +33,7 @@ I2CD_t init_i2c_device(uint8_t address, i2c_master_bus_handle_t master_bus) {
     };
 
     i2c_master_dev_handle_t handle;
-    esp_err_t add_device2bus_err = i2c_master_bus_add_device(master_bus, &config, &handle);
+    esp_err_t add_device2bus_err = i2c_master_bus_add_device(masterBus, &config, &handle);
 
     if (add_device2bus_err != ESP_OK) {
         free(device);
@@ -42,7 +42,7 @@ I2CD_t init_i2c_device(uint8_t address, i2c_master_bus_handle_t master_bus) {
         return NULL;
     }
 
-    device->master_bus = master_bus;
+    device->master_bus = masterBus;
     device->address    = address;
     device->dev_handle = handle;
 
@@ -57,7 +57,7 @@ I2CD_t init_i2c_device(uint8_t address, i2c_master_bus_handle_t master_bus) {
  * @param data Buffer to store the read data
  * @param size Size of the read data
  */
-void i2c_read(I2CD_t device, uint8_t *data, uint8_t size) {
+void i2CRead(I2CD_t device, uint8_t *data, uint8_t size) {
     if (size == 0) {
         ESP_LOGE(TAG, "Size must be greater than 0");
         return;
@@ -86,7 +86,7 @@ void i2c_read(I2CD_t device, uint8_t *data, uint8_t size) {
  * @param data Data to be written to the device
  * @param size Size of the data
  */
-void i2c_write(I2CD_t device, uint8_t *data, uint8_t size) {
+void i2CWrite(I2CD_t device, uint8_t *data, uint8_t size) {
     if (size == 0) {
         ESP_LOGE(TAG, "Size must be greater than 0");
         return;
@@ -117,7 +117,7 @@ void i2c_write(I2CD_t device, uint8_t *data, uint8_t size) {
  * @param receive Buffer to receive data
  * @param receive_size Size of receive buffer
  */
-void i2c_write_receive(I2CD_t device, uint8_t *data, uint8_t size, uint8_t *receive, uint8_t receive_size) {
+void i2CWriteReceive(I2CD_t device, uint8_t *data, uint8_t size, uint8_t *receive, uint8_t receive_size) {
     if (size == 0) {
         ESP_LOGE(TAG, "Size must be greater than 0");
         return;
@@ -155,6 +155,6 @@ void i2c_write_receive(I2CD_t device, uint8_t *data, uint8_t size, uint8_t *rece
  * @param device The i2c device
  * @return
  */
-uint8_t get_i2c_device_address(I2CD_t device) {
+uint8_t getI2CDeviceAddress(I2CD_t device) {
     return device->address;
 }

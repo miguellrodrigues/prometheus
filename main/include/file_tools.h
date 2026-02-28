@@ -6,12 +6,14 @@
 #include <esp_log.h>
 #include <string.h>
 
-void create_file(const char *path);
+void createFile(const char *path);
 
-uint8_t file_exists(const char *path);
+uint8_t fileExists(const char *path);
 
-FILE *open_file(const char *path, const char *mode);
+FILE *openFile(const char *path, const char *mode);
 
-void dump_file_hex(const char *path);
+void dumpFileHex(const char *path);
 
-void close_file(FILE *file);
+void closeFile(FILE *file);
+
+void deleteFile(const char *path);

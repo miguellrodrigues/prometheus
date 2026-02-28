@@ -23,7 +23,7 @@ const char keys[KEYPAD_ROWS][KEYPAD_COLS] = {{'#', '0', '*'},
  * @brief Initialize the keypad
  * @param device The i2c device
  */
-void keypad_init(I2CD_t device) {
+void keypadInit(I2CD_t device) {
     if (device == NULL) {
         return;
     }
@@ -32,7 +32,7 @@ void keypad_init(I2CD_t device) {
     *data         = config_mask;
 
     // config first time
-    i2c_write(device, data, 1);
+    i2CWrite(device, data, 1);
     free(data);
 }
 
@@ -41,7 +41,7 @@ void keypad_init(I2CD_t device) {
  * @param device The i2c device
  * @return The pressed key if theres' one, otherwise '\0'
  */
-char keypad_get_key(I2CD_t device) {
+char keypadGetKey(I2CD_t device) {
     if (device == NULL) {
         return '\0';
     }
@@ -52,8 +52,8 @@ char keypad_get_key(I2CD_t device) {
     for (uint8_t j = 0; j < KEYPAD_COLS; j++) {
         uint8_t write_data = config_mask & ~(1 << j); // we need to use this mask to not remove the the inputs config
 
-        i2c_write(device, &write_data, 1);
-        i2c_read (device, read_data, 1);
+        i2CWrite(device, &write_data, 1);
+        i2CRead(device, read_data, 1);
 
         // the return is 1 when not pressed, and 0 otherwise, because of the construction of the keypad
         // so first we discard the cols bits cause we know what col we are setting,

@@ -10,6 +10,6 @@
 
 #define KEYPAD_ADDRESS 0x20
 
-void keypad_init(I2CD_t device);
+void keypadInit(I2CD_t device);
 
-char keypad_get_key(I2CD_t device);
+char keypadGetKey(I2CD_t device);
